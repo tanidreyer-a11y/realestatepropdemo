@@ -241,6 +241,85 @@ a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visib
   .agent-photo{max-width:280px;}
 }
 
+/* ---- Gallery ----
+   A hover-reveal collection grid: image sits still, a scrim and
+   caption rise into place on hover (touch devices get the caption
+   permanently, since there is no hover to reveal it). Each card's
+   entrance uses the site's ordinary bidirectional .reveal fade —
+   the outward drift below is a separate, additive enhancement on
+   a wrapper element so the two motions never fight over the same
+   transform. */
+.gallery-sec{padding:200px 0; border-bottom:1px solid var(--line);}
+.gallery-head{max-width:640px; margin-bottom:80px;}
+.gallery-grid{display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:calc(var(--gap) * 0.45);}
+.gallery-cell{grid-column:span 1;}
+.gallery-cell.wide{grid-column:span 2;}
+
+.gallery-card{
+  position:relative; height:100%; aspect-ratio:4/5;
+  overflow:hidden; border:1px solid var(--line); background:#15161a;
+}
+.gallery-card img{
+  width:100%; height:100%; object-fit:cover;
+  transition:transform 1.2s var(--ease-out);
+  filter:grayscale(.15) contrast(1.05) brightness(.94);
+}
+.gallery-scrim{
+  position:absolute; inset:0; z-index:1; pointer-events:none;
+  background:linear-gradient(180deg, transparent 42%, rgba(11,12,14,.92) 100%);
+  opacity:0; transition:opacity .5s var(--ease-out);
+}
+.gallery-caption{
+  position:absolute; inset-inline:0; bottom:0; z-index:2;
+  padding:20px; opacity:0; transform:translateY(10px);
+  transition:opacity .5s var(--ease-out), transform .5s var(--ease-out);
+}
+.gallery-caption h3{font-family:var(--serif); font-size:1.2rem; font-weight:500; color:var(--paper); margin:0;}
+.gallery-caption p{font-size:.82rem; color:var(--paper-dim); margin:6px 0 0;}
+@media (hover:hover) and (pointer:fine){
+  .gallery-card:hover img{transform:scale(1.06);}
+  .gallery-card:hover .gallery-scrim{opacity:1;}
+  .gallery-card:hover .gallery-caption{opacity:1; transform:none;}
+}
+@media not all and (hover:hover){
+  .gallery-scrim, .gallery-caption{opacity:1; transform:none;}
+}
+
+.gallery-mark{
+  position:relative; height:100%; aspect-ratio:4/5;
+  display:flex; align-items:center; justify-content:center;
+}
+.gallery-mark .diamond{
+  width:76%; aspect-ratio:1; border:1px solid var(--gold);
+  transform:rotate(45deg);
+  display:flex; align-items:center; justify-content:center;
+  background:linear-gradient(135deg, #15161a, var(--ink));
+  box-shadow:0 30px 70px -24px rgba(0,0,0,.7);
+}
+.gallery-mark .diamond span{
+  transform:rotate(-45deg); text-align:center;
+  font-family:var(--serif); font-weight:500; color:var(--gold);
+  font-size:clamp(1.4rem, 2.4vw, 2rem); letter-spacing:-0.01em;
+}
+
+/* Additive scroll drift — feature-detected, reduced-motion-gated,
+   applied to a wrapper so it never shares a transform with the
+   card's own hover/entrance transforms. */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference){
+    .gallery-parallax{ animation:gallery-drift linear both; animation-timeline:view(); animation-range:entry 0% cover 40%; }
+    @keyframes gallery-drift{ from{ transform:translateY(46px); } to{ transform:translateY(-30px); } }
+  }
+}
+
+@media (max-width:900px){
+  .gallery-grid{grid-template-columns:repeat(2, minmax(0, 1fr));}
+}
+@media (max-width:560px){
+  .gallery-grid{grid-template-columns:minmax(0, 1fr);}
+  .gallery-cell.wide{grid-column:span 1;}
+}
+
 .quote-sec{padding:200px var(--gap); border-bottom:1px solid var(--line); text-align:center;}
 .quote-sec blockquote{font-family:var(--serif); font-size:clamp(1.5rem,3vw,2.4rem); line-height:1.32; max-width:780px; margin:0 auto 26px;}
 .quote-sec cite{font-style:normal; font-size:.72rem; letter-spacing:.16em; text-transform:uppercase; color:var(--paper-dim);}
@@ -434,6 +513,104 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
         <div class="agent-role">Founder &amp; Principal Agent</div>
         <p class="lede agent-bio">The one agent you deal with, from the first viewing to closing — no hand-offs, no rotating team. Twelve years representing architectural homes in this market, and a standing rule of never more than four listings at once.</p>
         <a class="agent-link" href="#enquire">Reach Julian directly <span class="arrow">&rarr;</span></a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==========================================================
+       GALLERY
+       ========================================================== -->
+  <section class="gallery-sec" id="gallery">
+    <div class="wrap">
+      <div class="gallery-head">
+        <div class="mask"><h2 class="reveal-up">Every room, held to the same standard.</h2></div>
+      </div>
+      <div class="gallery-grid">
+
+        <div class="gallery-parallax gallery-cell wide">
+          <div class="gallery-card reveal">
+            <img src="./assets/gallery/exterior-dusk.jpg" alt="OBSIDIAN exterior at dusk, forest behind" loading="lazy" decoding="async">
+            <div class="gallery-scrim"></div>
+            <div class="gallery-caption"><h3>The House</h3><p>Dark timber, glass to the floor.</p></div>
+          </div>
+        </div>
+
+        <div class="gallery-parallax gallery-cell">
+          <div class="gallery-card reveal">
+            <img src="./assets/gallery/entry-door.jpg" alt="Pivot entry door opening onto the forest" loading="lazy" decoding="async">
+            <div class="gallery-scrim"></div>
+            <div class="gallery-caption"><h3>The Entry</h3><p>A door that opens without a sound.</p></div>
+          </div>
+        </div>
+
+        <div class="gallery-parallax gallery-cell">
+          <div class="gallery-card reveal r1">
+            <img src="./assets/gallery/kitchen-marble.jpg" alt="Black marble kitchen island" loading="lazy" decoding="async">
+            <div class="gallery-scrim"></div>
+            <div class="gallery-caption"><h3>The Kitchen</h3><p>Marble quarried in shadow, veined in light.</p></div>
+          </div>
+        </div>
+
+        <div class="gallery-parallax gallery-cell wide">
+          <div class="gallery-card reveal r1">
+            <img src="./assets/gallery/living-room.jpg" alt="Living room facing the pool at dusk" loading="lazy" decoding="async">
+            <div class="gallery-scrim"></div>
+            <div class="gallery-caption"><h3>The Living Room</h3><p>Where the whole house exhales.</p></div>
+          </div>
+        </div>
+
+        <div class="gallery-parallax gallery-cell">
+          <div class="gallery-card reveal">
+            <img src="./assets/gallery/hallway.jpg" alt="Hallway with floor-to-ceiling glass" loading="lazy" decoding="async">
+            <div class="gallery-scrim"></div>
+            <div class="gallery-caption"><h3>The Hallway</h3><p>A corridor built around a view.</p></div>
+          </div>
+        </div>
+
+        <div class="gallery-mark gallery-cell reveal">
+          <div class="diamond"><span>OBSIDIAN</span></div>
+        </div>
+
+        <div class="gallery-parallax gallery-cell">
+          <div class="gallery-card reveal r1">
+            <img src="./assets/gallery/bedroom-suite.jpg" alt="Primary bedroom facing the forest" loading="lazy" decoding="async">
+            <div class="gallery-scrim"></div>
+            <div class="gallery-caption"><h3>The Primary Suite</h3><p>Sleep under glass, wake to pine.</p></div>
+          </div>
+        </div>
+
+        <div class="gallery-parallax gallery-cell">
+          <div class="gallery-card reveal">
+            <img src="./assets/gallery/bathroom-tub.jpg" alt="Black stone soaking tub" loading="lazy" decoding="async">
+            <div class="gallery-scrim"></div>
+            <div class="gallery-caption"><h3>The Bath</h3><p>Stone, steam, and nothing else.</p></div>
+          </div>
+        </div>
+
+        <div class="gallery-parallax gallery-cell">
+          <div class="gallery-card reveal r1">
+            <img src="./assets/gallery/fire-pit.jpg" alt="Sunken indoor fire pit at night" loading="lazy" decoding="async">
+            <div class="gallery-scrim"></div>
+            <div class="gallery-caption"><h3>The Fire Pit</h3><p>Sunken low, lit after dark.</p></div>
+          </div>
+        </div>
+
+        <div class="gallery-parallax gallery-cell wide">
+          <div class="gallery-card reveal">
+            <img src="./assets/gallery/pool-exterior.jpg" alt="Pool and house exterior at dusk" loading="lazy" decoding="async">
+            <div class="gallery-scrim"></div>
+            <div class="gallery-caption"><h3>The Water</h3><p>Twenty metres, heated, unlit by anything but itself.</p></div>
+          </div>
+        </div>
+
+        <div class="gallery-parallax gallery-cell">
+          <div class="gallery-card reveal r1">
+            <img src="./assets/gallery/materials-strip.jpg" alt="Charred oak, brass and black marble material samples" loading="lazy" decoding="async">
+            <div class="gallery-scrim"></div>
+            <div class="gallery-caption"><h3>Materials</h3><p>Charred oak. Brushed brass. Black stone.</p></div>
+          </div>
+        </div>
+
       </div>
     </div>
   </section>
@@ -706,10 +883,13 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
   // page is unusable without it.
   load();
 
-  /* ---- Reveals below the tour ---- */
+  /* ---- Reveals below the tour ----
+     Bidirectional on purpose: toggling instead of unobserving means
+     scrolling back up past a section plays its entrance again, the
+     same as scrolling down into it the first time. */
   var io = new IntersectionObserver(function(es){
     es.forEach(function(e){
-      if (e.isIntersecting){ e.target.classList.add("in"); io.unobserve(e.target); }
+      e.target.classList.toggle("in", e.isIntersecting);
     });
   }, { threshold:0.15, rootMargin:"0px 0px -60px 0px" });
   [].forEach.call(document.querySelectorAll(".reveal, .mask, .photo-reveal"), function(el){ io.observe(el); });
