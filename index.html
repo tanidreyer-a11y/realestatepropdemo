@@ -1117,9 +1117,30 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
   }
 
   function fetchBlob(){
-    /* A watchdog matters as much as the ring: a stalled download that
-       leaves the ring frozen at 40% is worse than no ring at all, so a
-       stream that goes quiet for 20s abandons the blob and falls back. */
+    /* Two different failures need two different guards, and only one
+       of them existed before this was measured:
+
+       STALLED — bytes stop arriving entirely (dead connection, phone
+       screen-locked mid-load). Caught by the 20s watchdog below, since
+       it resets on every chunk and only fires on true silence.
+
+       SLOW-BUT-STEADY — bytes never stop, they just trickle. The
+       watchdog above never fires, because something IS always arriving.
+       This is what a real weak-signal phone connection actually looks
+       like, and it is the one that was untested: measured on Chrome's
+       own "Fast 3G" profile (1.6Mbps / 150ms), this file took **123
+       seconds** to finish, frozen ring the entire time, on a page whose
+       whole premise is a visitor mid-scroll on their phone.
+
+       Fix: measure real throughput from the first ~600ms of actual
+       bytes. If the file would take longer than SLOW_LOAD_BUDGET_MS to
+       finish at that rate, stop treating this as a fast connection —
+       abandon the blob and fall back to native streaming, which starts
+       playable in ~1-2s and only stutters if someone scrubs ahead of
+       the buffer, instead of blocking on the whole file. A visitor who
+       can scrub roughly is better served than one staring at a ring. */
+    var SLOW_LOAD_BUDGET_MS = 8000;
+    var speedCheckAt = null, speedCheckBytes = 0, speedDecided = false;
     var watchdog, lastByteAt = performance.now();
 
     return fetch(VIDEO).then(function(res){
@@ -1148,6 +1169,20 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
           chunks.push(r.value);
           got += r.value.length;
           lastByteAt = performance.now();
+          if (speedCheckAt === null) speedCheckAt = performance.now();
+          speedCheckBytes += r.value.length;
+
+          if (!speedDecided && total && (performance.now() - speedCheckAt) > 600){
+            speedDecided = true;
+            var bytesPerMs = speedCheckBytes / (performance.now() - speedCheckAt);
+            var projectedMs = (total - got) / bytesPerMs;
+            if (projectedMs > SLOW_LOAD_BUDGET_MS){
+              clearInterval(watchdog);
+              try { reader.cancel(); } catch(e){}
+              nativeLoad();
+              return;
+            }
+          }
 
           var now = performance.now();
           if (now - lastPaint > 80){
