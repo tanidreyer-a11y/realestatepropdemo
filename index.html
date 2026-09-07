@@ -137,10 +137,33 @@ a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visib
 .band.on a{pointer-events:auto;}
 .band .eyebrow{margin-bottom:20px;}
 
-/* No loader, by design. The video streams instead of being
-   preloaded whole, so the first frame arrives in about a second
-   and the poster covers that gap. There is nothing left worth
-   interrupting the page for. */
+/* ---- Loader ----
+   The file is fetched whole before the scrub starts, because a
+   streamed scrub stalls the moment someone scrolls past what has
+   buffered — which reads as the page being broken, not slow. At
+   22MB that is roughly twelve seconds, and an honest progress ring
+   is what makes a deliberate wait feel deliberate. */
+.loader{
+  position:absolute; inset:0; z-index:6;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:24px; background:rgba(11,12,14,.58);
+  transition:opacity .9s var(--ease-out);
+}
+.loader.done{opacity:0; pointer-events:none;}
+.ring{position:relative; width:66px; height:66px;}
+.ring svg{width:100%; height:100%; transform:rotate(-90deg);}
+.ring circle{fill:none; stroke-width:1.5;}
+.ring .track{stroke:rgba(243,241,236,.16);}
+.ring .fill{stroke:var(--gold); stroke-linecap:round; transition:stroke-dashoffset .2s linear;}
+.pct{
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  font-size:.72rem; letter-spacing:.04em; color:var(--paper);
+  font-variant-numeric:tabular-nums;
+}
+.loading-label{
+  font-size:.63rem; letter-spacing:.24em; text-transform:uppercase;
+  color:rgba(243,241,236,.62); text-align:center;
+}
 
 /* Scroll cue */
 .cue{
@@ -163,6 +186,34 @@ a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visib
 .beats i{display:block; height:1px; width:16px; background:rgba(243,241,236,.24); transition:all .5s ease;}
 .beats i.on{width:34px; background:var(--gold);}
 @media (max-width:760px){ .beats{display:none;} }
+
+/* ---- Hero chrome ----
+   Without these the hero is a full-bleed video and nothing else, and
+   a visitor scrolling it has no signal that they are on a website at
+   all — no bar, no progress, no sense of position. A progress rule
+   and a named chapter readout are the cheapest possible fix: both are
+   real information, neither competes with the footage. */
+.progress{
+  position:fixed; top:0; left:0; right:0; height:2px; z-index:45;
+  background:var(--gold); transform:scaleX(0); transform-origin:left;
+  opacity:.85;
+}
+.nav{border-bottom:1px solid transparent; transition:border-color .4s ease, background .4s ease;}
+.nav.solid{border-bottom-color:var(--line); background:rgba(11,12,14,.82);}
+
+.chapter{
+  position:fixed; right:var(--gap); top:50%; z-index:35;
+  transform:translateY(calc(-50% - 96px));
+  text-align:right; pointer-events:none;
+  font-size:.62rem; letter-spacing:.2em; text-transform:uppercase;
+  color:var(--paper-dim);
+  opacity:0; transition:opacity .5s var(--ease-out);
+}
+.chapter.on{opacity:1;}
+.chapter .idx{color:var(--gold); font-variant-numeric:tabular-nums;}
+.chapter .name{display:block; margin-top:6px; color:var(--paper);}
+@media (max-width:760px){ .chapter{display:none;} }
+.static-tour .progress, .static-tour .chapter{display:none;}
 
 /* ---- Sections below the tour ----
    Three distinct treatments, not one fade repeated everywhere:
@@ -341,7 +392,7 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
    cases — a deliberate, finished design, not a degraded one. */
 .static-tour .story{height:auto !important;}
 .static-tour .stage{position:relative; height:auto; min-height:0; padding:140px 0;}
-.static-tour .stage video, .static-tour .cue{display:none;}
+.static-tour .stage video, .static-tour .cue, .static-tour .loader{display:none;}
 .static-tour .poster{position:absolute; inset:0;}
 .static-tour .scrim{background:rgba(11,12,14,.76);}
 .static-tour .band{position:relative; opacity:1; transform:none; padding:52px var(--gap); max-width:none;}
@@ -353,7 +404,7 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
 @media (prefers-reduced-motion: reduce){
   .story{height:auto !important;}
   .stage{position:relative; height:auto; min-height:0; padding:140px 0;}
-  .stage video, .cue{display:none;}
+  .stage video, .cue, .loader{display:none;}
   .poster{position:absolute; inset:0;}
   .scrim{background:rgba(11,12,14,.76);}
   .band{position:relative; opacity:1; transform:none; padding:52px var(--gap); max-width:none;}
@@ -376,6 +427,8 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
   </div>
 </nav>
 
+<div class="progress" id="progress" aria-hidden="true"></div>
+<div class="chapter" id="chapter" aria-hidden="true"><span class="idx"></span><span class="name"></span></div>
 <div class="beats" id="beats" aria-hidden="true"></div>
 
 <main id="main">
@@ -443,6 +496,13 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
         <a class="btn" href="#enquire">Request a viewing</a>
       </div>
 
+      <div class="loader" id="loader">
+        <div class="ring">
+          <svg viewBox="0 0 46 46"><circle class="track" cx="23" cy="23" r="20"></circle><circle class="fill" id="ringFill" cx="23" cy="23" r="20"></circle></svg>
+          <span class="pct" id="pct">0%</span>
+        </div>
+        <div class="loading-label" id="loadingLabel">Preparing the tour</div>
+      </div>
       <div class="cue" id="cue">Scroll</div>
     </div>
   </div>
@@ -670,6 +730,13 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
   var stage   = story.querySelector(".stage");
   var cue     = document.getElementById("cue");
   var beatsEl = document.getElementById("beats");
+  var loader  = document.getElementById("loader");
+  var ringFill= document.getElementById("ringFill");
+  var pct     = document.getElementById("pct");
+  var loadLbl = document.getElementById("loadingLabel");
+  var RING_C  = 2 * Math.PI * 20;
+  ringFill.style.strokeDasharray = RING_C;
+  ringFill.style.strokeDashoffset = RING_C;
 
   /* =========================================================
      TIERING — measured, not guessed.
@@ -733,9 +800,20 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
      cut has ~55% fewer pixels per frame and half the bytes, which is
      what actually helps a weak GPU — dropping quality settings on the
      1080p file would not have. */
-  var FULL_VIDEO  = "./assets/tour.mp4";
-  var LIGHT_VIDEO = "./assets/tour-720.mp4";
-  var VIDEO = (TIER === "mid") ? LIGHT_VIDEO : FULL_VIDEO;
+  /* Encoded with an 8-frame keyframe interval, not all-intra. Measured
+     against the all-intra cut of the same footage: median seek 5.3ms vs
+     18ms, p90 17.1ms vs 51.7ms, and 22MB vs 35MB. All-intra sounds like
+     it should seek fastest, but its bitrate is so high that each seek
+     reads more bytes than decoding eight small frames costs. */
+  var FULL_VIDEO  = "./assets/tour-g8.mp4";       // 1080p, 52MB — opt-in only
+  var LIGHT_VIDEO = "./assets/tour-720-g8.mp4";   // 720p, 22MB — the default
+
+  /* Source is deliberately NOT tied to the tier. Because the whole file
+     is preloaded before the scrub starts, its size is the visitor's wait
+     — so everyone gets the 22MB cut (~12s on a normal connection) and
+     the 1080p is opt-in via ?quality=1080. The tier still governs render
+     cost (blur, parallax) and the adaptive downgrade below. */
+  var VIDEO = /[?&]quality=1080/.test(location.search) ? FULL_VIDEO : LIGHT_VIDEO;
 
   /* ---------------------------------------------------------
      THE ADAPTIVE PART
@@ -812,20 +890,30 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
 
   /* ---------------------------------------------------------
      SCROLL LENGTH
-     The video is 50s. Giving it 3750vh keeps the same ~75vh per
-     second of footage as before — deliberately long, so the
-     camera drifts rather than races. Raise this number to slow
-     it further; lower it to speed it up.
-
      Only meaningful when there is a scrub to pace: the static
      tour collapses the tall wrapper instead.
-     --------------------------------------------------------- */
-  var SCROLL_VH = 3750;
+
+     1400vh, not 3750. At 3750 the hero ran ~37 screen-heights — a
+     visitor scrolled for that entire distance seeing nothing but
+     video, which is why it stopped reading as a website and started
+     reading as a video player. 1400vh is ~28vh per second of footage,
+     which still keeps every caption band above the flick-test floor
+     (the narrowest band holds for ~5.7 flicks of 120px) while cutting
+     the endless middle. Pacing comes from typography and rhythm, not
+     from stretching one element forever. */
+  var SCROLL_VH = 1400;
   if (!staticTour) story.style.height = SCROLL_VH + "vh";
 
   /* ---- Caption bands ---- */
   var bands = [].slice.call(story.querySelectorAll(".band")).map(function(el){
-    return { el: el, a: parseFloat(el.dataset.a), b: parseFloat(el.dataset.b), on: null };
+    var label = el.querySelector(".eyebrow");
+    return {
+      el: el,
+      a: parseFloat(el.dataset.a),
+      b: parseFloat(el.dataset.b),
+      name: label ? label.textContent : "",
+      on: null
+    };
   });
 
   bands.forEach(function(){
@@ -834,10 +922,18 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
   });
   var beatBars = [].slice.call(beatsEl.children);
 
+  var progressEl = document.getElementById("progress");
+  var chapterEl  = document.getElementById("chapter");
+  var chapIdx    = chapterEl.querySelector(".idx");
+  var chapName   = chapterEl.querySelector(".name");
+  var lastChapter = null, lastNavSolid = null, lastProgress = -1;
+
   function paint(p){
+    var active = -1;
     for (var i = 0; i < bands.length; i++){
       var b = bands[i];
       var on = p >= b.a && p <= b.b;
+      if (on) active = i;
       if (on !== b.on){
         b.on = on;
         b.el.classList.toggle("on", on);
@@ -845,6 +941,32 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
       }
     }
     cue.style.opacity = String(Math.max(0, 1 - p / 0.03));
+
+    /* Everything below writes to the DOM only on an actual change —
+       per-frame writes are the second biggest cause of scrub stutter
+       after un-gated seeks. */
+    var pr = Math.round(p * 1000) / 1000;
+    if (pr !== lastProgress){
+      lastProgress = pr;
+      progressEl.style.transform = "scaleX(" + pr + ")";
+    }
+
+    if (active !== lastChapter){
+      lastChapter = active;
+      if (active < 0){
+        chapterEl.classList.remove("on");
+      } else {
+        chapIdx.textContent  = String(active + 1).padStart(2, "0") + " / " + String(bands.length).padStart(2, "0");
+        chapName.textContent = bands[active].name;
+        chapterEl.classList.add("on");
+      }
+    }
+
+    var solid = p > 0.01;
+    if (solid !== lastNavSolid){
+      lastNavSolid = solid;
+      document.querySelector(".nav").classList.toggle("solid", solid);
+    }
   }
 
   /* ---------------------------------------------------------
@@ -885,6 +1007,7 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
     // a half-dead stage behind.
     seeking = false; pending = null; clearTimeout(guard);
     video.style.display = "none";
+    loader.classList.add("done");
     document.documentElement.classList.add("static-tour");
   });
 
@@ -971,16 +1094,77 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
   function load(){
     if (started || staticTour) return;   // low tier / reduced motion: no video, ever
     started = true;
+    fetchBlob().catch(nativeLoad);
+  }
+
+  function ready(){
+    loader.classList.add("done");
+    video.classList.add("ready");
+    seek(progress() * video.duration);
+    paint(progress());
+  }
+
+  function nativeLoad(){
+    // Fallback when fetch cannot reach the file — a file:// page cannot
+    // fetch siblings, but <video> can still load them. Byte progress is
+    // not knowable here, so say "Loading" rather than a fake 0%.
+    pct.style.display = "none";
+    loadLbl.textContent = "Loading";
     video.preload = "auto";
     video.addEventListener("canplay", ready, { once:true });
     video.src = VIDEO;
     video.load();
   }
 
-  function ready(){
-    video.classList.add("ready");
-    seek(progress() * video.duration);
-    paint(progress());
+  function fetchBlob(){
+    /* A watchdog matters as much as the ring: a stalled download that
+       leaves the ring frozen at 40% is worse than no ring at all, so a
+       stream that goes quiet for 20s abandons the blob and falls back. */
+    var watchdog, lastByteAt = performance.now();
+
+    return fetch(VIDEO).then(function(res){
+      if (!res.ok || !res.body) throw new Error("no stream");
+      var total  = Number(res.headers.get("Content-Length")) || 0;
+      var reader = res.body.getReader();
+      var chunks = [], got = 0, lastPaint = 0;
+
+      watchdog = setInterval(function(){
+        if (performance.now() - lastByteAt > 20000){
+          clearInterval(watchdog);
+          try { reader.cancel(); } catch(e){}
+          nativeLoad();
+        }
+      }, 2000);
+
+      return (function pump(){
+        return reader.read().then(function(r){
+          if (r.done){
+            clearInterval(watchdog);
+            video.src = URL.createObjectURL(new Blob(chunks, { type:"video/mp4" }));
+            video.load();
+            video.addEventListener("loadeddata", ready, { once:true });
+            return;
+          }
+          chunks.push(r.value);
+          got += r.value.length;
+          lastByteAt = performance.now();
+
+          var now = performance.now();
+          if (now - lastPaint > 80){
+            lastPaint = now;
+            if (total){
+              var frac = got / total;
+              ringFill.style.strokeDashoffset = String(RING_C * (1 - frac));
+              pct.textContent = Math.round(frac * 100) + "%";
+            } else {
+              pct.style.fontSize = "0.6rem";
+              pct.textContent = (got / 1048576).toFixed(0) + "MB";
+            }
+          }
+          return pump();
+        });
+      })();
+    }).catch(function(e){ clearInterval(watchdog); throw e; });
   }
 
   load();
