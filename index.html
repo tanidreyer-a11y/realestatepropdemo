@@ -672,61 +672,51 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
   var beatsEl = document.getElementById("beats");
 
   /* =========================================================
-     DEVICE TIER DETECTION
-     Runs ONCE per session. Returns "high" | "mid" | "low".
+     TIERING — measured, not guessed.
 
-     This site has no WebGL, so the usual GPU-renderer sniff is
-     not the useful signal — the cost here is a 76MB video
-     download plus continuous decode-and-seek. That makes NETWORK
-     and RAM the signals that actually predict a bad time, with
-     CPU cores standing in for decode headroom.
+     An earlier version of this scored hardwareConcurrency,
+     deviceMemory and effectiveType into a tier up front. That was
+     wrong, and worth writing down so it does not come back:
+     those numbers describe a spec sheet, not a machine. Eight
+     phone cores report the same as eight desktop cores.
+     deviceMemory is rounded, capped at 8, and absent entirely on
+     Safari and Firefox. Nothing there sees thermal throttling, a
+     battery-saver profile, or twenty other tabs. Scoring it
+     guesses — and the expensive failure is guessing DOWN, handing
+     a capable machine a softer picture it never needed.
 
-     What each tier gets (see load() further down):
-       high — full file preloaded as a Blob, frame-perfect scrub
-       mid  — native streaming, scrub within whatever has buffered
-       low  — no video at all, static poster layout
+     So: assume every device is capable, then watch what actually
+     happens and step down only on evidence. Pre-flight only
+     decides things that are declarations or hard limits, never
+     predictions:
 
-     TUNING: adjust the point values or the two cutoffs at the
-     bottom of this function. Higher cutoffs = more visitors sent
-     to the cheaper tiers. The bias here is deliberately toward
-     fast first paint: a visitor who waits 40s for a perfect
-     scrub is worse off than one who starts scrolling in 2s on a
-     slightly softer one.
+       saveData          the visitor asked to spend fewer bytes
+       2g / slow-2g      cannot carry this file in any useful time
+       reduced motion    an accessibility request, checked apart
+                         from performance entirely
 
-     QA: append ?tier=low (or mid/high) to force a branch. Kept
-     in production on purpose — it is inert unless explicitly
-     asked for, and it is how you check the other two tiers on a
-     real phone rather than trusting a simulator.
+     Everything else starts at "high" and has to earn a downgrade
+     in monitor() below.
+
+     QA: ?tier=high|mid|low forces a branch and freezes it there
+     (no adaptation). Kept in production deliberately — it is how
+     you compare tiers on a real device instead of trusting a
+     simulator.
      ========================================================= */
-  function detectTier(){
-    var forced = /[?&]tier=(high|mid|low)/.exec(location.search);
-    if (forced) return forced[1];
+  var forcedTier = (/[?&]tier=(high|mid|low)/.exec(location.search) || [])[1] || null;
 
-    var cores = navigator.hardwareConcurrency || 0;   // absent on older Safari
-    var mem   = navigator.deviceMemory || 0;          // Chrome/Edge only
-    var conn  = navigator.connection || {};
-    var net   = conn.effectiveType || "";             // absent on Safari/Firefox
-    var minDim = Math.min(screen.width, screen.height);
+  function preflightTier(){
+    if (forcedTier) return forcedTier;
 
-    // Hard floors. Nothing outscores an explicit request to save
-    // data, or a connection that cannot carry the file in any
-    // reasonable time.
+    var conn = navigator.connection || {};
     if (conn.saveData === true) return "low";
-    if (net === "slow-2g" || net === "2g") return "low";
+    if (conn.effectiveType === "slow-2g" || conn.effectiveType === "2g") return "low";
 
-    var score = 0;
-    if (cores >= 8)      score += 2; else if (cores >= 4) score += 1; else if (cores > 0) score -= 1;
-    if (mem   >= 8)      score += 2; else if (mem   >= 4) score += 1; else if (mem   > 0) score -= 2;
-    if (net === "4g" || net === "") score += 1; else if (net === "3g") score -= 2;
-    if (minDim <= 480)   score -= 1;                       // phone-shaped, weak signal only
-    if (minDim >= 1024 && cores >= 8) score += 1;          // desktop-class
-
-    if (score >= 4) return "high";
-    if (score >= 0) return "mid";
-    return "low";
+    // No evidence of trouble yet, so assume none.
+    return "high";
   }
 
-  var TIER   = detectTier();
+  var TIER   = preflightTier();
   var reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
   document.documentElement.dataset.tier = TIER;
 
@@ -743,8 +733,82 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
      cut has ~55% fewer pixels per frame and half the bytes, which is
      what actually helps a weak GPU — dropping quality settings on the
      1080p file would not have. */
-  var VIDEO = (TIER === "mid") ? "./assets/tour-720.mp4"
-                               : "./assets/tour.mp4";
+  var FULL_VIDEO  = "./assets/tour.mp4";
+  var LIGHT_VIDEO = "./assets/tour-720.mp4";
+  var VIDEO = (TIER === "mid") ? LIGHT_VIDEO : FULL_VIDEO;
+
+  /* ---------------------------------------------------------
+     THE ADAPTIVE PART
+     Watches real frame intervals while the scrub is actually
+     moving, and drops to the lighter file only if this specific
+     device, right now, cannot keep up.
+
+     Deliberate choices:
+     - Only samples while scrubbing. An idle page is not evidence.
+     - Skips a warm-up. The first moments include decode start-up
+       and initial buffering, which are not representative.
+     - Judges once, on a window of ~90 sampled frames (~1.5s of
+       real scrolling), then stops sampling for good. One verdict,
+       no flip-flopping between sources mid-scroll.
+     - Downgrades at most one step, high -> mid. It never drops to
+       the static layout at runtime: that would collapse a 3750vh
+       page to auto height underneath someone mid-scroll, which is
+       far worse than a slightly soft picture.
+     - A forced ?tier= freezes everything. If you asked for a tier
+       you get that tier.
+     --------------------------------------------------------- */
+  var LONG_FRAME_MS     = 40;    // ~25fps: past this it reads as a hitch
+  var MAX_CREDIBLE_MS   = 250;   // past this it is a stall, not slowness — see below
+  var SAMPLE_TARGET     = 90;    // frames of real scrubbing before judging
+  var BAD_SHARE         = 0.25;  // >25% long frames = genuinely struggling
+  var WARMUP_MS         = 1200;
+
+  var samples = 0, longFrames = 0, monitorFrom = 0, monitoring = !forcedTier;
+
+  /* Frames can be slow for reasons that have nothing to do with
+     how capable the machine is: the tab went to the background,
+     the browser throttled rAF to save power, a garbage collection
+     pause landed, another tab hogged the main thread. Counting
+     those would downgrade a perfectly good machine — the exact
+     failure this whole approach exists to avoid. So anything
+     absurdly long is discarded rather than counted against the
+     device, and the sample window restarts if the tab was hidden. */
+  document.addEventListener("visibilitychange", function(){
+    if (document.hidden){ samples = 0; longFrames = 0; monitorFrom = 0; }
+  });
+
+  function monitor(rawDelta){
+    if (!monitoring || TIER !== "high") return;
+    if (video.readyState < 2) return;       // not decoding yet: not representative
+    if (document.hidden) return;            // not being watched: not representative
+    if (rawDelta > MAX_CREDIBLE_MS) return; // a stall, not a slow frame: discard
+
+    if (!monitorFrom) monitorFrom = performance.now() + WARMUP_MS;
+    if (performance.now() < monitorFrom) return;
+
+    samples++;
+    if (rawDelta > LONG_FRAME_MS) longFrames++;
+    if (samples < SAMPLE_TARGET) return;
+
+    monitoring = false;                       // one verdict, either way
+    if (longFrames / samples > BAD_SHARE) downgrade();
+  }
+
+  function downgrade(){
+    if (TIER !== "high") return;
+    TIER = "mid";
+    document.documentElement.dataset.tier = "mid";   // CSS drops blur + parallax
+
+    // Swap sources without losing the visitor's place. Both files
+    // are the same 50.125s cut, so currentTime carries over exactly.
+    var at = video.currentTime;
+    seeking = false; pending = null; clearTimeout(guard);
+    video.src = LIGHT_VIDEO;
+    video.load();
+    video.addEventListener("loadedmetadata", function(){
+      try { video.currentTime = at; } catch(e){}
+    }, { once:true });
+  }
 
   /* ---------------------------------------------------------
      SCROLL LENGTH
@@ -835,14 +899,16 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
   var target = 0, shown = 0, raf = null, last = 0, onScreen = true;
 
   function tick(now){
-    var dt = Math.min(64, now - (last || now));
+    var raw = now - (last || now);          // uncapped: what the frame really cost
+    var dt  = Math.min(64, raw);            // capped: keeps the easing sane after a stall
     last = now;
 
     // 0.10 per 16.7ms: close enough to the finger to feel connected,
     // damped enough that a flick glides instead of snapping.
     shown += (target - shown) * (1 - Math.pow(1 - 0.10, dt / 16.667));
 
-    if (Math.abs(target - shown) < 0.00025){
+    var moving = Math.abs(target - shown) >= 0.00025;
+    if (!moving){
       shown = target; raf = null; last = 0;
     } else {
       raf = requestAnimationFrame(tick);
@@ -850,6 +916,10 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
 
     if (video.duration) seek(shown * video.duration);
     paint(shown);
+
+    // Sample only while the scrub is genuinely in motion — an idle
+    // page tells us nothing about whether this device can keep up.
+    if (moving && raw > 0) monitor(raw);
   }
 
   function drive(p){
