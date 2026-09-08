@@ -794,6 +794,16 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
   var staticTour = (TIER === "low") || reduce;
   if (staticTour) document.documentElement.classList.add("static-tour");
 
+  /* staticTour above only catches DECLARED signals (reduced motion,
+     forced tier, saveData/2g). It says nothing about whether THIS
+     device can actually decode and seek video in real time — which is
+     exactly the axis that broke on two real old phones, and which no
+     spec-sheet number predicts (the whole reason tiering here is
+     measured, not guessed — see the note above preflightTier). That
+     gets decided below, once, before the page commits to either
+     layout. See probeDecodeCapability near the bottom of this file. */
+  var capabilityKnown = staticTour || !!forcedTier;
+
   /* The tier's real cost lever. Scrubbing spends most of its budget
      DECODING, not downloading: every frame in these files is a
      keyframe, so each scroll tick decodes a whole picture. The 720p
@@ -805,8 +815,18 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
      18ms, p90 17.1ms vs 51.7ms, and 22MB vs 35MB. All-intra sounds like
      it should seek fastest, but its bitrate is so high that each seek
      reads more bytes than decoding eight small frames costs. */
-  var FULL_VIDEO  = "./assets/tour-g8.mp4";       // 1080p, 52MB — opt-in only
-  var LIGHT_VIDEO = "./assets/tour-720-g8.mp4";   // 720p, 22MB — the default
+  /* Encoded in H.264 "Main" profile, not the libx264 default of "High".
+     Found via real devices, not simulation: two old Android phones
+     (weak Huawei/Samsung) failed on the High-profile files — one froze
+     mid-scrub entirely, one decoded but visibly corrupted ("glitchy").
+     Both symptoms match a hardware decoder that cannot handle a stream's
+     profile: it either falls back to a software decoder that cannot keep
+     up in real time (the glitching), or hits a feature it does not
+     support and the whole pipeline stalls (the freeze). Main profile is
+     near-universally supported by mobile hardware decoders; the size
+     cost was negligible (720p +0.8MB, 1080p +3.2MB) when measured. */
+  var FULL_VIDEO  = "./assets/tour-1080-main.mp4"; // 1080p, 55.1MB — opt-in only
+  var LIGHT_VIDEO = "./assets/tour-720-main.mp4";  // 720p, 23.0MB — the default
 
   /* Source is deliberately NOT tied to the tier. Because the whole file
      is preloaded before the scrub starts, its size is the visitor's wait
@@ -902,7 +922,8 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
      the endless middle. Pacing comes from typography and rhythm, not
      from stretching one element forever. */
   var SCROLL_VH = 1400;
-  if (!staticTour) story.style.height = SCROLL_VH + "vh";
+  // Applied inside beginScrub() below — only once the device is known
+  // capable of it, never speculatively.
 
   /* ---- Caption bands ---- */
   var bands = [].slice.call(story.querySelectorAll(".band")).map(function(el){
@@ -1059,7 +1080,22 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
 
   function onScroll(){ drive(progress()); }
 
-  if (!staticTour){
+  /* ---------------------------------------------------------
+     COMMIT — exactly one of these runs, exactly once, and it is
+     the only place either layout actually gets switched on. Splitting
+     "decide" from "commit" this way is what lets the decision wait on
+     a real probe result without any of the scroll/video machinery
+     existing in a half-initialized state in the meantime.
+     --------------------------------------------------------- */
+  function beginStatic(){
+    staticTour = true;
+    document.documentElement.classList.add("static-tour");
+  }
+
+  function beginScrub(){
+    staticTour = false;
+    story.style.height = SCROLL_VH + "vh";
+
     addEventListener("scroll", onScroll, { passive:true });
     addEventListener("resize", onScroll);
 
@@ -1069,6 +1105,107 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
         if (onScreen && raf === null) raf = requestAnimationFrame(tick);
       });
     }, { threshold:0 }).observe(stage);
+
+    load();
+  }
+
+  /* ---------------------------------------------------------
+     THE CAPABILITY PROBE
+     Answers Tanid's direct question: can a genuinely weak phone get
+     the plain static layout instead of a broken scrub, decided BEFORE
+     anyone starts scrolling rather than mid-scroll? Yes — this is that
+     mechanism. It measures the one thing that actually matters (can
+     this device seek this video in real time) rather than reading
+     hardwareConcurrency/deviceMemory, for the same reason preflightTier
+     above does not: those numbers describe a spec sheet, not what the
+     device does right now.
+
+     Method: load metadata, then time 3 real seeks spread across the
+     file (different keyframe regions). A capable device resolves each
+     in tens of milliseconds; a device that cannot decode this stream
+     in real time — the exact failure on both test phones — either
+     times out or takes far longer. More than one failed/slow seek out
+     of three, or a metadata load that never arrives, means: static.
+
+     Cost: worst case (a device that is going to fail anyway) spends
+     up to ~6s deciding before showing the clean static page instead of
+     a broken scrub — a fair trade. A capable device typically resolves
+     the whole probe in well under a second, on top of what it already
+     spends loading fonts and markup.
+
+     TUNING — THIS NEEDS A REAL DEVICE, NOT A GUESS: SEEK_OK_MS and
+     MAX_FAILS below are a reasoned starting point (grounded in this
+     project's own desktop seek measurements, which ran 5-18ms), not a
+     value confirmed against real weak Android hardware. Re-test on the
+     same two phones that found this bug; if a phone that should
+     clearly get the static page is still landing on the scrub (or the
+     reverse), tighten or loosen these two numbers first before
+     touching anything else. */
+  function probeDecodeCapability(onPass, onFail){
+    var SEEK_TARGETS      = [3, 20, 40];  // spread across the file, different keyframes
+    var PER_SEEK_TIMEOUT_MS = 700;
+    var META_TIMEOUT_MS     = 4000;
+    var SEEK_OK_MS          = 150;        // average successful seek must resolve under this
+    var MAX_FAILS           = 1;          // more than this many failed/slow seeks: static
+
+    var settled = false;
+    function finish(pass){
+      if (settled) return;
+      settled = true;
+      (pass ? onPass : onFail)();
+    }
+
+    var metaTimer = setTimeout(function(){ finish(false); }, META_TIMEOUT_MS);
+
+    video.addEventListener("loadedmetadata", function onMeta(){
+      video.removeEventListener("loadedmetadata", onMeta);
+      clearTimeout(metaTimer);
+      runSeeks();
+    }, { once:true });
+
+    video.preload = "metadata";
+    video.src = LIGHT_VIDEO;
+    video.load();
+
+    function runSeeks(){
+      var i = 0, fails = 0, totalMs = 0, count = 0;
+      (function next(){
+        if (settled) return;
+        if (i >= SEEK_TARGETS.length){
+          var avg = count ? totalMs / count : Infinity;
+          finish(fails <= MAX_FAILS && avg <= SEEK_OK_MS);
+          return;
+        }
+        var target = SEEK_TARGETS[i++];
+        var t0 = performance.now();
+        var resolved = false;
+
+        var timer = setTimeout(function(){
+          if (resolved) return;
+          resolved = true;
+          fails++;
+          next();
+        }, PER_SEEK_TIMEOUT_MS);
+
+        video.addEventListener("seeked", function onSeeked(){
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timer);
+          totalMs += performance.now() - t0;
+          count++;
+          next();
+        }, { once:true });
+
+        try { video.currentTime = target; }
+        catch(e){ if (!resolved){ resolved = true; clearTimeout(timer); fails++; next(); } }
+      })();
+    }
+  }
+
+  if (capabilityKnown){
+    if (staticTour) beginStatic(); else beginScrub();
+  } else {
+    probeDecodeCapability(beginScrub, beginStatic);
   }
 
   /* ---------------------------------------------------------
@@ -1202,7 +1339,9 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
     }).catch(function(e){ clearInterval(watchdog); throw e; });
   }
 
-  load();
+  // load() is now called from inside beginScrub() above, once the
+  // capability probe (or a hard preflight signal) has actually decided
+  // this device gets the scrub at all.
 
   /* ---- Reveals below the tour ----
      Bidirectional on purpose: toggling instead of unobserving means
