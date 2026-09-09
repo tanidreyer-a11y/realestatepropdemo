@@ -1165,11 +1165,25 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
        seeks entirely inside it. That isolates real decode speed from
        network-seek overhead, because there is no network involved in
        the timed portion at all. */
-    var PREFIX_BYTES        = 2 * 1024 * 1024; // ~2MB — comfortably covers the targets below
-    var SEEK_TARGETS        = [0.5, 1.5, 3.0]; // all well inside the fetched prefix
+    /* PREFIX_BYTES kept small on purpose: the fetch step is the one part
+       of this probe still exposed to real network variance (the seek
+       step, once the blob is local, measured a consistent ~60ms — that
+       number is trustworthy; fetch timing during today's diagnosis
+       ranged from 2ms to 4657ms for the SAME identical request against
+       the SAME instance, which is test-environment noise, not a number
+       worth building a tight threshold around). Smaller prefix = less
+       fetch exposed to that variance. FETCH_TIMEOUT_MS is deliberately
+       generous rather than tightly tuned, since I cannot get reliable
+       real-world calibration data from this environment right now — a
+       false "static" verdict on a capable machine is the worse failure
+       mode of the two (it looks broken; a slow device that wrongly
+       passes still has the mid-scroll adaptive downgrade and the video
+       error handler as safety nets behind it). */
+    var PREFIX_BYTES        = 1 * 1024 * 1024; // ~1MB — ~2.3s of footage at this bitrate
+    var SEEK_TARGETS        = [0.3, 0.8, 1.5]; // all comfortably inside the fetched prefix
     var PER_SEEK_TIMEOUT_MS = 700;
-    var FETCH_TIMEOUT_MS    = 5000;             // generous: this only has to move ~2MB
-    var SEEK_OK_MS          = 150;              // average successful seek must resolve under this
+    var FETCH_TIMEOUT_MS    = 9000;             // generous on purpose — see note above
+    var SEEK_OK_MS          = 150;              // measured clean at ~60ms; 150 leaves real margin
     var MAX_FAILS           = 1;                // more than this many failed/slow seeks: static
 
     var settled = false;
@@ -1179,6 +1193,11 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
       (pass ? onPass : onFail)();
     }
 
+    /* One timer covers the whole pre-seek phase (fetch AND the wait for
+       loadedmetadata once the blob is assigned) rather than two separate
+       ones — a blob that fetches fine but never fires loadedmetadata
+       (malformed prefix, browser quirk) previously had no guard at all
+       and would have hung the decision forever. */
     var fetchTimer = setTimeout(function(){ finish(false); }, FETCH_TIMEOUT_MS);
 
     fetch(LIGHT_VIDEO, { headers: { Range: "bytes=0-" + (PREFIX_BYTES - 1) } })
@@ -1187,10 +1206,10 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
         return res.blob();
       })
       .then(function(blob){
-        clearTimeout(fetchTimer);
         if (settled) return;
         var prefixUrl = URL.createObjectURL(blob);
         video.addEventListener("loadedmetadata", function onMeta(){
+          clearTimeout(fetchTimer);
           video.removeEventListener("loadedmetadata", onMeta);
           runSeeks(prefixUrl);
         }, { once:true });
