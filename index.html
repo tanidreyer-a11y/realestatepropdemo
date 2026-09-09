@@ -1142,53 +1142,80 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
      reverse), tighten or loosen these two numbers first before
      touching anything else. */
   function probeDecodeCapability(onPass, onFail){
-    var SEEK_TARGETS      = [3, 20, 40];  // spread across the file, different keyframes
-    var PER_SEEK_TIMEOUT_MS = 15000; // TEMP: raised to observe real resolution time, not just >threshold
-    var META_TIMEOUT_MS     = 15000; // TEMP
-    var SEEK_OK_MS          = 150;        // average successful seek must resolve under this
-    var MAX_FAILS           = 1;          // more than this many failed/slow seeks: static
+    /* v2 — measures decode speed, not network-seek speed.
+
+       v1 seeked directly on a `preload="metadata"` <video src>, jumping
+       to 3s/20s/40s on effectively unbuffered data. Measured live in
+       production: raw fetch() of the same byte ranges took 99-171ms
+       (Vercel edge cache HIT, confirmed via x-vercel-cache header) —
+       but the <video> element's own seek took 2900-3200ms for the
+       SAME data. That ~20-30x gap is overhead in the browser's cold
+       HTTP-Range media-seeking path specifically, not network speed
+       and not decode speed — and it doesn't reflect the real
+       experience anyway, because a passing device goes on to use the
+       fully preloaded Blob path (fetchBlob below), where every seek is
+       against 100% local data — separately measured on desktop at
+       5-18ms median. Testing cold network seeks was measuring a
+       strictly harder case than the one that actually ships, which is
+       why this failed on capable hardware, including Tanid's own
+       laptop, the same night it was written.
+
+       v2 instead fetches a small prefix of the SAME file as a Blob
+       (identical mechanism to the real load, just smaller) and times
+       seeks entirely inside it. That isolates real decode speed from
+       network-seek overhead, because there is no network involved in
+       the timed portion at all. */
+    var PREFIX_BYTES        = 2 * 1024 * 1024; // ~2MB — comfortably covers the targets below
+    var SEEK_TARGETS        = [0.5, 1.5, 3.0]; // all well inside the fetched prefix
+    var PER_SEEK_TIMEOUT_MS = 700;
+    var FETCH_TIMEOUT_MS    = 5000;             // generous: this only has to move ~2MB
+    var SEEK_OK_MS          = 150;              // average successful seek must resolve under this
+    var MAX_FAILS           = 1;                // more than this many failed/slow seeks: static
 
     var settled = false;
     function finish(pass){
-      console.log('[probe] finish pass=', pass, 'at', performance.now().toFixed(0));
       if (settled) return;
       settled = true;
       (pass ? onPass : onFail)();
     }
 
-    console.log('[probe] start at', performance.now().toFixed(0), 'readyState=', video.readyState, 'display=', getComputedStyle(video).display);
-    var metaTimer = setTimeout(function(){ console.log('[probe] META TIMEOUT'); finish(false); }, META_TIMEOUT_MS);
+    var fetchTimer = setTimeout(function(){ finish(false); }, FETCH_TIMEOUT_MS);
 
-    video.addEventListener("loadedmetadata", function onMeta(){
-      console.log('[probe] loadedmetadata at', performance.now().toFixed(0));
-      video.removeEventListener("loadedmetadata", onMeta);
-      clearTimeout(metaTimer);
-      runSeeks();
-    }, { once:true });
+    fetch(LIGHT_VIDEO, { headers: { Range: "bytes=0-" + (PREFIX_BYTES - 1) } })
+      .then(function(res){
+        if (!res.ok) throw new Error("bad status");
+        return res.blob();
+      })
+      .then(function(blob){
+        clearTimeout(fetchTimer);
+        if (settled) return;
+        var prefixUrl = URL.createObjectURL(blob);
+        video.addEventListener("loadedmetadata", function onMeta(){
+          video.removeEventListener("loadedmetadata", onMeta);
+          runSeeks(prefixUrl);
+        }, { once:true });
+        video.src = prefixUrl;
+        video.load();
+      })
+      .catch(function(){ finish(false); });
 
-    video.preload = "metadata";
-    video.src = LIGHT_VIDEO;
-    video.load();
-
-    function runSeeks(){
+    function runSeeks(prefixUrl){
       var i = 0, fails = 0, totalMs = 0, count = 0;
       (function next(){
         if (settled) return;
         if (i >= SEEK_TARGETS.length){
           var avg = count ? totalMs / count : Infinity;
-          console.log('[probe] all seeks done: fails=', fails, 'avg=', avg.toFixed(1), 'count=', count);
+          URL.revokeObjectURL(prefixUrl); // this was only ever the probe's own temp blob
           finish(fails <= MAX_FAILS && avg <= SEEK_OK_MS);
           return;
         }
         var target = SEEK_TARGETS[i++];
         var t0 = performance.now();
         var resolved = false;
-        console.log('[probe] seek#'+i, 'to', target, 'readyState=', video.readyState, 'networkState=', video.networkState);
 
         var timer = setTimeout(function(){
           if (resolved) return;
           resolved = true;
-          console.log('[probe] seek to', target, 'TIMED OUT at', PER_SEEK_TIMEOUT_MS+'ms, readyState now=', video.readyState);
           fails++;
           next();
         }, PER_SEEK_TIMEOUT_MS);
@@ -1197,15 +1224,13 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
           if (resolved) return;
           resolved = true;
           clearTimeout(timer);
-          var ms = performance.now() - t0;
-          console.log('[probe] seek to', target, 'RESOLVED in', ms.toFixed(1)+'ms');
-          totalMs += ms;
+          totalMs += performance.now() - t0;
           count++;
           next();
         }, { once:true });
 
         try { video.currentTime = target; }
-        catch(e){ console.log('[probe] threw:', e.message); if (!resolved){ resolved = true; clearTimeout(timer); fails++; next(); } }
+        catch(e){ if (!resolved){ resolved = true; clearTimeout(timer); fails++; next(); } }
       })();
     }
   }
