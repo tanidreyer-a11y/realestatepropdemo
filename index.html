@@ -1143,21 +1143,24 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
      touching anything else. */
   function probeDecodeCapability(onPass, onFail){
     var SEEK_TARGETS      = [3, 20, 40];  // spread across the file, different keyframes
-    var PER_SEEK_TIMEOUT_MS = 700;
-    var META_TIMEOUT_MS     = 4000;
+    var PER_SEEK_TIMEOUT_MS = 15000; // TEMP: raised to observe real resolution time, not just >threshold
+    var META_TIMEOUT_MS     = 15000; // TEMP
     var SEEK_OK_MS          = 150;        // average successful seek must resolve under this
     var MAX_FAILS           = 1;          // more than this many failed/slow seeks: static
 
     var settled = false;
     function finish(pass){
+      console.log('[probe] finish pass=', pass, 'at', performance.now().toFixed(0));
       if (settled) return;
       settled = true;
       (pass ? onPass : onFail)();
     }
 
-    var metaTimer = setTimeout(function(){ finish(false); }, META_TIMEOUT_MS);
+    console.log('[probe] start at', performance.now().toFixed(0), 'readyState=', video.readyState, 'display=', getComputedStyle(video).display);
+    var metaTimer = setTimeout(function(){ console.log('[probe] META TIMEOUT'); finish(false); }, META_TIMEOUT_MS);
 
     video.addEventListener("loadedmetadata", function onMeta(){
+      console.log('[probe] loadedmetadata at', performance.now().toFixed(0));
       video.removeEventListener("loadedmetadata", onMeta);
       clearTimeout(metaTimer);
       runSeeks();
@@ -1173,16 +1176,19 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
         if (settled) return;
         if (i >= SEEK_TARGETS.length){
           var avg = count ? totalMs / count : Infinity;
+          console.log('[probe] all seeks done: fails=', fails, 'avg=', avg.toFixed(1), 'count=', count);
           finish(fails <= MAX_FAILS && avg <= SEEK_OK_MS);
           return;
         }
         var target = SEEK_TARGETS[i++];
         var t0 = performance.now();
         var resolved = false;
+        console.log('[probe] seek#'+i, 'to', target, 'readyState=', video.readyState, 'networkState=', video.networkState);
 
         var timer = setTimeout(function(){
           if (resolved) return;
           resolved = true;
+          console.log('[probe] seek to', target, 'TIMED OUT at', PER_SEEK_TIMEOUT_MS+'ms, readyState now=', video.readyState);
           fails++;
           next();
         }, PER_SEEK_TIMEOUT_MS);
@@ -1191,13 +1197,15 @@ footer{border-top:1px solid var(--line); padding:40px var(--gap);}
           if (resolved) return;
           resolved = true;
           clearTimeout(timer);
-          totalMs += performance.now() - t0;
+          var ms = performance.now() - t0;
+          console.log('[probe] seek to', target, 'RESOLVED in', ms.toFixed(1)+'ms');
+          totalMs += ms;
           count++;
           next();
         }, { once:true });
 
         try { video.currentTime = target; }
-        catch(e){ if (!resolved){ resolved = true; clearTimeout(timer); fails++; next(); } }
+        catch(e){ console.log('[probe] threw:', e.message); if (!resolved){ resolved = true; clearTimeout(timer); fails++; next(); } }
       })();
     }
   }
